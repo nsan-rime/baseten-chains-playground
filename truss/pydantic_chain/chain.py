@@ -1,36 +1,68 @@
 import asyncio
 
-import random
 import truss_chains as chains
 
 from pydantic import (
     BaseModel,
-    PositiveInt,
+    Field,
+    constr,
+    model_validator,
+    PositiveFloat
 )
+from typing import Literal
 
-class RandInt(chains.ChainletBase):
-    async def run_remote(self, max_value: int) -> int:
-        return random.randint(1, max_value)
+NonEmptyStr = constr(strip_whitespace=True, min_length=1)
 
-class HelloWordRequest(BaseModel):
-    max_value: PositiveInt
+# Pydanctic model to be used by Baseten server for validation
+# even before run_remote is run
+class UserPayload(BaseModel):
+    # Required input params
+    text: NonEmptyStr
+    speaker: NonEmptyStr
+    
+    # Runtime params:
+    rimeLogging: bool = False
+    
+    # Preprocessing params
+    noTextNormalization: bool = False
+    
+    # vLLM params
+    temperature: float = Field(gt=0, le=1, default=0.1)
+    top_p: float = Field(gt=0, le=1, default=0.75)
+    repetition_penalty: PositiveFloat = 1.25
+    
+    # Output params
+    audioFormat: Literal['wav', 'pcm', 'mp3', 'mulaw'] = 'wav'
+    samplingRate: Literal[ 8_000, 16_000, 22_050, 44_100, 48_000 ] = 24_000
+
+    @model_validator(mode='after')
+    def mulaw_8khz(self):
+        if self.audioFormat == "mulaw":
+            self.samplingRate = 8_000
+        return self
+
+# Payload used from client on Baseten playground
+client_payload = {
+    "payload" : {
+        "text" : "this is a test.",
+        "speaker" : "luna"
+    }
+}
 
 @chains.mark_entrypoint
 class HelloWorld(chains.ChainletBase):
-    def __init__(self, rand_int=chains.depends(RandInt, retries=3)) -> None:
-        self._rand_int = rand_int
-
-    async def run_remote(self, payload: HelloWordRequest) -> str:
-        num_repetitions = await self._rand_int.run_remote(payload.max_value)
-        return "Hello World! " * num_repetitions
+    async def run_remote(self, payload: UserPayload) -> str:
+        payload_str = payload.model_dump_json(indent=4)
+        print(payload_str)
+        return payload_str
 
 # Test the Chain locally
 if __name__ == "__main__":
     with chains.run_local():
-        payload = HelloWordRequest(max_value=5)
 
-        hello_chain = HelloWorld()
+        local_payload = UserPayload(**client_payload["payload"])
+
+        e = HelloWorld()
         result = asyncio.get_event_loop().run_until_complete(
-            hello_chain.run_remote(payload)
+            e.run_remote(local_payload)
         )
-        print(result)
